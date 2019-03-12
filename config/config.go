@@ -10,8 +10,28 @@ import (
 
 	yaml "gopkg.in/yaml.v2"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/config"
 )
+
+var (
+	configReloadSuccess = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "blackbox_exporter",
+		Name:      "config_last_reload_successful",
+		Help:      "Blackbox exporter config loaded successfully.",
+	})
+
+	configReloadSeconds = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "blackbox_exporter",
+		Name:      "config_last_reload_success_timestamp_seconds",
+		Help:      "Timestamp of the last successful configuration reload.",
+	})
+)
+
+func init() {
+	prometheus.MustRegister(configReloadSuccess)
+	prometheus.MustRegister(configReloadSeconds)
+}
 
 type Config struct {
 	Modules map[string]Module `yaml:"modules"`
@@ -24,6 +44,14 @@ type SafeConfig struct {
 
 func (sc *SafeConfig) ReloadConfig(confFile string) (err error) {
 	var c = &Config{}
+	defer func() {
+		if err != nil {
+			configReloadSuccess.Set(0)
+		} else {
+			configReloadSuccess.Set(1)
+			configReloadSeconds.SetToCurrentTime()
+		}
+	}()
 
 	yamlFile, err := ioutil.ReadFile(confFile)
 	if err != nil {
@@ -52,19 +80,27 @@ type Module struct {
 
 type HTTPProbe struct {
 	// Defaults to 2xx.
-	ValidStatusCodes       []int                   `yaml:"valid_status_codes,omitempty"`
-	ValidHTTPVersions      []string                `yaml:"valid_http_versions,omitempty"`
-	IPProtocol             string                  `yaml:"preferred_ip_protocol,omitempty"`
-	IPProtocolFallback     bool                    `yaml:"ip_protocol_fallback,omitempty"`
-	NoFollowRedirects      bool                    `yaml:"no_follow_redirects,omitempty"`
-	FailIfSSL              bool                    `yaml:"fail_if_ssl,omitempty"`
-	FailIfNotSSL           bool                    `yaml:"fail_if_not_ssl,omitempty"`
-	Method                 string                  `yaml:"method,omitempty"`
-	Headers                map[string]string       `yaml:"headers,omitempty"`
-	FailIfMatchesRegexp    []string                `yaml:"fail_if_matches_regexp,omitempty"`
-	FailIfNotMatchesRegexp []string                `yaml:"fail_if_not_matches_regexp,omitempty"`
-	Body                   string                  `yaml:"body,omitempty"`
-	HTTPClientConfig       config.HTTPClientConfig `yaml:"http_client_config,inline"`
+	ValidStatusCodes             []int                   `yaml:"valid_status_codes,omitempty"`
+	ValidHTTPVersions            []string                `yaml:"valid_http_versions,omitempty"`
+	IPProtocol                   string                  `yaml:"preferred_ip_protocol,omitempty"`
+	IPProtocolFallback           bool                    `yaml:"ip_protocol_fallback,omitempty"`
+	NoFollowRedirects            bool                    `yaml:"no_follow_redirects,omitempty"`
+	FailIfSSL                    bool                    `yaml:"fail_if_ssl,omitempty"`
+	FailIfNotSSL                 bool                    `yaml:"fail_if_not_ssl,omitempty"`
+	Method                       string                  `yaml:"method,omitempty"`
+	Headers                      map[string]string       `yaml:"headers,omitempty"`
+	FailIfBodyMatchesRegexp      []string                `yaml:"fail_if_body_matches_regexp,omitempty"`
+	FailIfBodyNotMatchesRegexp   []string                `yaml:"fail_if_body_not_matches_regexp,omitempty"`
+	FailIfHeaderMatchesRegexp    []HeaderMatch           `yaml:"fail_if_header_matches,omitempty"`
+	FailIfHeaderNotMatchesRegexp []HeaderMatch           `yaml:"fail_if_header_not_matches,omitempty"`
+	Body                         string                  `yaml:"body,omitempty"`
+	HTTPClientConfig             config.HTTPClientConfig `yaml:"http_client_config,inline"`
+}
+
+type HeaderMatch struct {
+	Header       string `yaml:"header,omitempty"`
+	Regexp       string `yaml:"regexp,omitempty"`
+	AllowMissing bool   `yaml:"allow_missing,omitempty"`
 }
 
 type QueryResponse struct {
@@ -187,5 +223,23 @@ func (s *QueryResponse) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	if err := unmarshal((*plain)(s)); err != nil {
 		return err
 	}
+	return nil
+}
+
+// UnmarshalYAML implements the yaml.Unmarshaler interface.
+func (s *HeaderMatch) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type plain HeaderMatch
+	if err := unmarshal((*plain)(s)); err != nil {
+		return err
+	}
+
+	if s.Header == "" {
+		return errors.New("header name must be set for HTTP header matchers")
+	}
+
+	if s.Regexp == "" {
+		return errors.New("regexp must be set for HTTP header matchers")
+	}
+
 	return nil
 }
